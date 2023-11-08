@@ -23,6 +23,8 @@ internal class Program
 
             CheckTimeCard.CheckTimeCardEntriesOverEightHours(oracleConnection, workOrder.Work_Order_No, timeCardEntries);
         }
+
+        Console.ReadLine();
     }
 
     private static string GetConnectionString(string connectionStringName = "Default")

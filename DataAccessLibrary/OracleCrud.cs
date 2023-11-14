@@ -33,10 +33,6 @@ namespace DataAccessLibrary
 
         public List<WorkOrderIssuesBalanceModel> GetWorkOrderItemIssuesBalance(string workOrder)
         {
-            /* Why does dapper return more elements than my sql select statement?  If my class has 3 properties but I only
-             * select 2 fields in my select statement, how are all 3 properties populated?
-             */
-            /* string sql = $"select WORK_ORDER_NO, BALANCE_QTY from V_WO_BOM_BALANCE_QTY where WORK_ORDER_NO = '{workOrder}'"; */
             string sql = $"select WORK_ORDER_NO, STEP_ID, BALANCE_QTY from V_WO_BOM_BALANCE_QTY where WORK_ORDER_NO = '{workOrder}'";
 
             return _db.LoadData<WorkOrderIssuesBalanceModel, dynamic>(sql, new { }, _connectionString);

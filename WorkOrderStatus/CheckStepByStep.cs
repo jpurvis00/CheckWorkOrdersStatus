@@ -12,7 +12,7 @@ namespace WorkOrderStatus
             {
                 Console.WriteLine($"WO: {entry.Work_Order_No} Record No: {entry.Record_No} " +
                     $"Line No: {entry.Line_No} Step Id: {entry.Step_Id} Good qty: {entry.Good_Qty} " +
-                    $"Scrdap Qty = {entry.Scrap_Qty} Reporting type: {entry.Tc_Reporting_Type}");
+                    $"Scrap Qty = {entry.Scrap_Qty} Reporting type: {entry.Tc_Reporting_Type}");
             }
             
             var stepIdDictionary = CreateStepDictionary(completedSteps);

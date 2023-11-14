@@ -22,6 +22,8 @@ internal class Program
             CheckWOIssues.CheckWOIssuesLotNos(oracleConnection, workOrder.Work_Order_No);
 
             CheckTimeCard.CheckTimeCardEntriesOverEightHours(oracleConnection, workOrder.Work_Order_No, timeCardEntries);
+
+            Console.WriteLine();
         }
 
         Console.ReadLine();

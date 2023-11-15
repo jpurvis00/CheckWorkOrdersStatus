@@ -11,10 +11,13 @@ internal class Program
     {
         OracleCrud oracleConnection = new OracleCrud(GetConnectionString());
 
-        var closedWorkOrders = oracleConnection.GetClosedWorkOrders();
-       
-        foreach(var workOrder in closedWorkOrders)
+        var dayToCheck = GetDayToCheckClosedWorkOrders.GetDayToCheck();
+        var closedWorkOrders = oracleConnection.GetClosedWorkOrders(dayToCheck);
+
+        foreach (var workOrder in closedWorkOrders)
         {
+            Console.WriteLine($"***** WO: {workOrder.Work_Order_No} *****");
+
             CheckStepByStep.CheckStepByStepTimeCardEntries(oracleConnection, workOrder.Work_Order_No, timeCardEntries);
 
             CheckWOIssues.CheckWOIssuesBalances(oracleConnection, workOrder.Work_Order_No);
@@ -23,9 +26,10 @@ internal class Program
 
             CheckTimeCard.CheckTimeCardEntriesOverEightHours(oracleConnection, workOrder.Work_Order_No, timeCardEntries);
 
-            Console.WriteLine();
+            Console.WriteLine("**********************\n");
         }
 
+        Console.WriteLine("Finished processing work orders.");
         Console.ReadLine();
     }
 

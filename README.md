@@ -1,5 +1,6 @@
 # CheckWorkOrdersStatus
-Grabs a list of Work Orders completed yesterday and checks them for any errors.
+Grabs a list of Work Orders completed yesterday and checks them for any errors.  This is accomplished by connecting to an oracle database and then 
+using the Dapper ORM to retrieve the info from the db and map it to our class models for processing.
 
 The following items are checked from WO's.
  1. Check that the quantities from completed routing steps match the WO completed quantity.

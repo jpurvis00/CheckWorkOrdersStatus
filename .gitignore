@@ -398,3 +398,6 @@ FodyWeavers.xsd
 
 # JetBrains Rider
 *.sln.iml
+
+# Local build output (prebuilt zips are rebuilt with dotnet publish, not committed)
+dist/

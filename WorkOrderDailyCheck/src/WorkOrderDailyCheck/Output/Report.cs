@@ -11,30 +11,42 @@ public sealed class RunSummary
 {
     public required DateTime DateChecked { get; init; }
     public required IReadOnlyList<WorkOrderResult> Results { get; init; }
-    public ExcelOutcome? Excel { get; init; }
+    /// <summary>WO numbers given with --wo; empty for the normal daily run.</summary>
+    public IReadOnlyList<string> RequestedWorkOrders { get; init; } = Array.Empty<string>();
     /// <summary>Set when the whole run failed (e.g. could not connect to the database).</summary>
     public string? FatalError { get; init; }
 
+    public bool IsWorkOrderRun => RequestedWorkOrders.Count > 0;
     public int ProblemCount => Results.Count(r => !r.AllOk);
 
+    private string Prefix => IsWorkOrderRun
+        ? $"WO recheck {string.Join(", ", RequestedWorkOrders)}"
+        : $"WO check {DateChecked:M/d/yyyy}";
+
     public string Subject => FatalError is not null
-        ? $"WO check {DateChecked:M/d/yyyy}: FAILED to run"
+        ? $"{Prefix}: FAILED to run"
         : Results.Count == 0
-            ? $"WO check {DateChecked:M/d/yyyy}: no closed work orders"
+            ? $"{Prefix}: no closed work orders"
             : ProblemCount == 0
-                ? $"WO check {DateChecked:M/d/yyyy}: all {Results.Count} OK"
-                : $"WO check {DateChecked:M/d/yyyy}: {ProblemCount} of {Results.Count} need attention";
+                ? (Results.Count == 1 ? $"{Prefix}: OK" : $"{Prefix}: all {Results.Count} OK")
+                : (Results.Count == 1 ? $"{Prefix}: needs attention" : $"{Prefix}: {ProblemCount} of {Results.Count} need attention");
+
+    public string Heading => IsWorkOrderRun
+        ? $"Work order recheck: {string.Join(", ", RequestedWorkOrders)}"
+        : $"Work order check for WOs closed {DateChecked:dddd, MMMM d, yyyy}";
 }
 
 public static class Report
 {
     private static string E(string? s) => WebUtility.HtmlEncode(s ?? "");
 
-    public static string Html(RunSummary s, string checkMark)
+    private const string CheckMark = "✓";
+
+    public static string Html(RunSummary s)
     {
         var sb = new StringBuilder();
         sb.Append("<html><body style=\"font-family:Segoe UI,Arial,sans-serif;font-size:14px;color:#222\">");
-        sb.Append($"<h2 style=\"margin:0 0 8px\">Work order check for WOs closed {s.DateChecked:dddd, MMMM d, yyyy}</h2>");
+        sb.Append($"<h2 style=\"margin:0 0 8px\">{E(s.Heading)}</h2>");
 
         if (s.FatalError is not null)
         {
@@ -50,16 +62,6 @@ public static class Report
             sb.Append($"<p>{s.Results.Count} work order(s) checked: <b>{s.Results.Count - s.ProblemCount} OK</b>, " +
                       $"<b style=\"color:{(s.ProblemCount > 0 ? "#b00020" : "#222")}\">{s.ProblemCount} need attention</b>.</p>");
 
-        if (s.Excel is not null)
-        {
-            if (s.Excel.Warning is not null)
-                sb.Append($"<p style=\"color:#b00020\"><b>Spreadsheet:</b> {E(s.Excel.Warning)}</p>");
-            else if (s.Excel.SavedTo is not null)
-                sb.Append($"<p>Spreadsheet: {s.Excel.RowsAdded} row(s) added to {E(s.Excel.SavedTo)}.</p>");
-            if (s.Excel.AlreadyInSheet.Count > 0)
-                sb.Append($"<p>Already in the spreadsheet, not added again: {E(string.Join(", ", s.Excel.AlreadyInSheet))}.</p>");
-        }
-
         // Problems first, so they are the first thing read.
         var problems = s.Results.Where(r => !r.AllOk).ToList();
         if (problems.Count > 0)
@@ -69,6 +71,8 @@ public static class Report
             {
                 var wo = r.WorkOrder;
                 sb.Append($"<p style=\"margin:10px 0 2px\"><b>WO {E(wo.WorkOrderNo)}</b> &ndash; {E(wo.ItemNo)} {E(wo.ItemDescription)}</p><ul style=\"margin:0\">");
+                if (!wo.FoundInClosedJobs && r.RunError is null)
+                    sb.Append("<li>Not in z_closed_jobs_nightly, so item details are blank. The checks still ran.</li>");
                 if (r.RunError is not null)
                     sb.Append($"<li><b>Could not be checked:</b> {E(r.RunError)}</li>");
                 foreach (var e in r.StatusErrors) sb.Append($"<li><b>Status:</b> {E(e)}</li>");
@@ -89,7 +93,7 @@ public static class Report
             foreach (var r in s.Results)
             {
                 var wo = r.WorkOrder;
-                string Mark(bool ok) => ok ? E(checkMark) : "<span style=\"color:#b00020;font-weight:bold\">&#10007;</span>";
+                string Mark(bool ok) => ok ? CheckMark : "<span style=\"color:#b00020;font-weight:bold\">&#10007;</span>";
                 sb.Append($"<tr><td {td}>{E(wo.WorkOrderNo)}</td><td {td}>{E(wo.ItemNo)}</td><td {td}>{E(wo.ItemDescription)}</td>" +
                           $"<td {td}>{wo.WoQty:0.##}</td><td {td}>{wo.CloseDate:M/d/yyyy}</td>" +
                           $"<td {tdc}>{Mark(r.CostOk)}</td><td {tdc}>{Mark(r.StatusOk)}</td></tr>");
@@ -113,14 +117,13 @@ public static class Report
             sb.AppendLine(s.FatalError);
             return sb.ToString();
         }
-        if (s.Excel?.Warning is not null) sb.AppendLine("Spreadsheet: " + s.Excel.Warning);
-        else if (s.Excel?.SavedTo is not null) sb.AppendLine($"Spreadsheet: {s.Excel.RowsAdded} row(s) added to {s.Excel.SavedTo}");
         sb.AppendLine();
         foreach (var r in s.Results)
         {
             var wo = r.WorkOrder;
             sb.AppendLine($"WO {wo.WorkOrderNo}  {wo.ItemNo}  {wo.ItemDescription}  qty {wo.WoQty:0.##}  " +
                           $"cost {(r.CostOk ? "OK" : "ISSUE")}  status {(r.StatusOk ? "OK" : "ISSUE")}");
+            if (!wo.FoundInClosedJobs && r.RunError is null) sb.AppendLine("    (Not in z_closed_jobs_nightly, so item details are blank. The checks still ran.)");
             if (r.RunError is not null) sb.AppendLine("    Could not be checked: " + r.RunError);
             foreach (var e in r.StatusErrors) sb.AppendLine("    Status: " + e);
             foreach (var e in r.CostErrors) sb.AppendLine("    Cost: " + e);
@@ -128,29 +131,15 @@ public static class Report
         return sb.ToString();
     }
 
-    public static void Send(RunSummary s, EmailSettings settings, string checkMark)
+    public static void Send(RunSummary s, EmailSettings settings)
     {
         if (settings.To.Count == 0 || string.IsNullOrWhiteSpace(settings.From))
             throw new InvalidOperationException("Email is enabled but Email:From or Email:To is not set in appsettings.json.");
 
-        (string Name, byte[] Bytes)? attachment = null;
-        var html = Html(s, checkMark);
-        if (settings.AttachWorkbook && s.Excel?.SavedTo is { } path && File.Exists(path))
-        {
-            using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
-            using var ms = new MemoryStream();
-            fs.CopyTo(ms);
-            attachment = (Path.GetFileName(path), ms.ToArray());
-        }
-
+        var html = Html(s);
         if (string.Equals(settings.Provider, "Graph", StringComparison.OrdinalIgnoreCase))
         {
-            if (attachment is { } a && a.Bytes.Length > GraphMailer.MaxAttachmentBytes)
-            {
-                html = html.Replace("</body>", $"<p>The workbook ({a.Bytes.Length / 1024 / 1024.0:0.0} MB) is too large to attach; open it at {E(s.Excel!.SavedTo)}.</p></body>");
-                attachment = null;
-            }
-            GraphMailer.Send(settings, s.Subject, html, attachment);
+            GraphMailer.Send(settings, s.Subject, html);
             return;
         }
 
@@ -161,11 +150,7 @@ public static class Report
         message.From.Add(MailboxAddress.Parse(settings.From));
         foreach (var to in settings.To) message.To.Add(MailboxAddress.Parse(to));
         message.Subject = s.Subject;
-
-        var body = new BodyBuilder { HtmlBody = html, TextBody = Text(s) };
-        if (attachment is { } att)
-            body.Attachments.Add(att.Name, att.Bytes);
-        message.Body = body.ToMessageBody();
+        message.Body = new BodyBuilder { HtmlBody = html, TextBody = Text(s) }.ToMessageBody();
 
         using var client = new SmtpClient();
         var security = Enum.TryParse<SecureSocketOptions>(settings.Security, true, out var opt) ? opt : SecureSocketOptions.Auto;

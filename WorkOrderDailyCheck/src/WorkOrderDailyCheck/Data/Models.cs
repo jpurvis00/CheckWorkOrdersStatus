@@ -11,7 +11,9 @@ public sealed class ClosedWorkOrder
     public string? ItemNo { get; set; }
     public string? ItemDescription { get; set; }
     public decimal WoQty { get; set; }
-    public DateTime CloseDate { get; set; }
+    public DateTime? CloseDate { get; set; }
+    /// <summary>False when a WO given with --wo has no row in z_closed_jobs_nightly.</summary>
+    public bool FoundInClosedJobs { get; set; } = true;
 }
 
 /// <summary>Row from mfg_tc_detail (used by both the status and the cost checks).</summary>
@@ -71,4 +73,7 @@ public sealed class WorkOrderData
     public List<CostLedgerRow> CostIssues { get; init; } = new();
     public List<CostLedgerRow> PoReceipts { get; init; } = new();
     public List<CostLedgerRow> Completions { get; init; } = new();
+
+    public bool HasAnyActivity =>
+        TimeCards.Count + IssueBalances.Count + IssueLots.Count + CostIssues.Count + PoReceipts.Count + Completions.Count > 0;
 }

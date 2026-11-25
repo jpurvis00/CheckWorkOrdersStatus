@@ -4,12 +4,11 @@
 
 .DESCRIPTION
   Run this once, in an elevated PowerShell, on a Windows PC or server that can reach the
-  Oracle ERP database, the P: share and your mail server. The time is the machine's local
-  time, so set the machine to Eastern time (or change -At).
+  Oracle ERP database and send email. The time is the machine's local time, so set the
+  machine to Eastern time (or change -At).
 
-  The task runs whether or not you are logged on. A mapped drive letter such as P: is NOT
-  available in that case, so set Excel:Path in appsettings.json to the UNC path
-  (\\server\share\jeff\CheckStatus\...). Run "net use" to see what P: points to.
+  The task runs "WorkOrderDailyCheck.exe --days 1": every day it checks the WOs closed the
+  day before and emails the results. The task runs whether or not you are logged on.
 
 .EXAMPLE
   .\Register-DailyTask.ps1 -ExePath "C:\Tools\WorkOrderDailyCheck\WorkOrderDailyCheck.exe"
@@ -31,7 +30,7 @@ $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -ExecutionTimeLimit
                 -RestartCount 2 -RestartInterval (New-TimeSpan -Minutes 15)
 
 # Runs as you, whether or not you are logged on. Windows asks for your password once.
-$cred = Get-Credential -UserName "$env:USERDOMAIN\$env:USERNAME" -Message "Account the task runs as (needs access to the share)"
+$cred = Get-Credential -UserName "$env:USERDOMAIN\$env:USERNAME" -Message "Account the task runs as"
 Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Settings $settings `
     -User $cred.UserName -Password $cred.GetNetworkCredential().Password -RunLevel Limited -Force | Out-Null
 

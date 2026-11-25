@@ -4,22 +4,31 @@ using WorkOrderDailyCheck.Checks;
 using WorkOrderDailyCheck.Data;
 using WorkOrderDailyCheck.Output;
 
-// Usage: WorkOrderDailyCheck [days] [--days N] [--no-email] [--no-excel] [--config path]
-//   days  how many days back to check (default 1 = yesterday, the normal daily run)
 // Exit codes: 0 = ran, everything OK; 1 = ran, some WOs need attention; 2 = run failed.
 
 var baseDir = AppContext.BaseDirectory;   // Task Scheduler starts in System32, so never rely on the current directory.
-var options = Options.Parse(args);
+Options options;
+try
+{
+    options = Options.Parse(args);
+}
+catch (ArgumentException ex)
+{
+    Console.Error.WriteLine(ex.Message);
+    Console.Error.WriteLine();
+    Console.Error.WriteLine(Options.Usage);
+    return 2;
+}
 if (options.ShowHelp)
 {
-    Console.WriteLine("Usage: WorkOrderDailyCheck [days] [--days N] [--no-email] [--no-excel] [--config path]");
+    Console.WriteLine(Options.Usage);
     return 0;
 }
 
 var config = new ConfigurationBuilder()
     .SetBasePath(baseDir)
     .AddJsonFile(options.ConfigPath ?? "appsettings.json", optional: false)
-    .AddEnvironmentVariables("WODC_")   // e.g. WODC_Email__Password, WODC_ConnectionString
+    .AddEnvironmentVariables("WODC_")   // e.g. WODC_Email__Graph__ClientSecret, WODC_ConnectionString
     .Build();
 var settings = AppSettings.Load(config);
 
@@ -34,7 +43,9 @@ void Log(string message)
 }
 
 var dateChecked = DateTime.Today.AddDays(-options.Days);
-Log($"Checking work orders closed {dateChecked:yyyy-MM-dd} ({options.Days} day(s) back).");
+Log(options.IsWorkOrderRun
+    ? $"Rechecking work order(s) {string.Join(", ", options.WorkOrders)}."
+    : $"Checking work orders closed {dateChecked:yyyy-MM-dd} ({options.Days} day(s) back).");
 
 RunSummary summary;
 try
@@ -42,14 +53,30 @@ try
     var results = new List<WorkOrderResult>();
     using (var erp = new ErpRepository(settings.ConnectionString))
     {
-        var closed = erp.GetClosedWorkOrders(options.Days);
-        Log($"{closed.Count} closed work order(s) found.");
+        List<ClosedWorkOrder> workOrders;
+        if (options.IsWorkOrderRun)
+        {
+            workOrders = options.WorkOrders.Select(erp.GetWorkOrder).ToList();
+        }
+        else
+        {
+            workOrders = erp.GetClosedWorkOrders(options.Days);
+            Log($"{workOrders.Count} closed work order(s) found.");
+        }
 
-        foreach (var wo in closed)
+        foreach (var wo in workOrders)
         {
             try
             {
-                results.Add(WorkOrderChecker.Check(erp.GetWorkOrderData(wo), settings.Rules));
+                var data = erp.GetWorkOrderData(wo);
+                if (!wo.FoundInClosedJobs && !data.HasAnyActivity)
+                    results.Add(new WorkOrderResult
+                    {
+                        WorkOrder = wo,
+                        RunError = "No work order with this number was found (no closed-job record, time cards, issues or completions).",
+                    });
+                else
+                    results.Add(WorkOrderChecker.Check(data, settings.Rules));
             }
             catch (Exception ex)
             {
@@ -59,39 +86,35 @@ try
         }
     }
 
-    ExcelOutcome? excel = null;
-    if (settings.Excel.Enabled && !options.NoExcel)
-    {
-        try
-        {
-            excel = ExcelLog.Append(results, settings.Excel, baseDir, Log);
-            Log($"Spreadsheet: {excel.RowsAdded} row(s) added to {excel.SavedTo}. {excel.Warning}");
-        }
-        catch (Exception ex)
-        {
-            Log("Spreadsheet update failed: " + ex);
-            excel = new ExcelOutcome { Warning = "The spreadsheet could not be updated: " + ex.Message };
-        }
-    }
-
-    summary = new RunSummary { DateChecked = dateChecked, Results = results, Excel = excel };
+    summary = new RunSummary { DateChecked = dateChecked, Results = results, RequestedWorkOrders = options.WorkOrders };
 }
 catch (Exception ex)
 {
     Log("Run failed: " + ex);
-    summary = new RunSummary { DateChecked = dateChecked, Results = Array.Empty<WorkOrderResult>(), FatalError = Messages(ex) + Environment.NewLine + $"Full details are in {logFile}." };
+    summary = new RunSummary
+    {
+        DateChecked = dateChecked,
+        Results = Array.Empty<WorkOrderResult>(),
+        RequestedWorkOrders = options.WorkOrders,
+        FatalError = Messages(ex) + Environment.NewLine + $"Full details are in {logFile}.",
+    };
 }
 
 var report = Report.Text(summary);
 Console.WriteLine();
 Console.WriteLine(report);
-try { File.WriteAllText(Path.Combine(logFolder, $"report_{dateChecked:yyyy-MM-dd}.txt"), report); } catch { }
+var reportName = options.IsWorkOrderRun
+    ? $"report_WO_{DateTime.Now:yyyy-MM-dd_HHmmss}.txt"
+    : $"report_{dateChecked:yyyy-MM-dd}.txt";
+try { File.WriteAllText(Path.Combine(logFolder, reportName), report); } catch { }
 
-if (settings.Email.Enabled && !options.NoEmail)
+// The daily run emails unless --no-email; a --wo recheck only prints, unless --email.
+var sendEmail = settings.Email.Enabled && (options.IsWorkOrderRun ? options.Email : !options.NoEmail);
+if (sendEmail)
 {
     try
     {
-        Report.Send(summary, settings.Email, settings.Excel.CheckMark);
+        Report.Send(summary, settings.Email);
         Log($"Email sent to {string.Join(", ", settings.Email.To)}.");
     }
     catch (Exception ex)
@@ -110,26 +133,61 @@ static string Messages(Exception ex)
     return string.Join(Environment.NewLine, parts.Distinct());
 }
 
-internal sealed record Options(int Days, bool NoEmail, bool NoExcel, string? ConfigPath, bool ShowHelp)
+internal sealed record Options(int Days, IReadOnlyList<string> WorkOrders, bool Email, bool NoEmail, string? ConfigPath, bool ShowHelp)
 {
+    public bool IsWorkOrderRun => WorkOrders.Count > 0;
+
+    public const string Usage = """
+        Usage:
+          WorkOrderDailyCheck [--days N] [--no-email]
+              Check every WO closed N days ago (default 1 = yesterday) and email the results.
+              This is what the scheduled task runs.
+
+          WorkOrderDailyCheck --wo 906156 [--wo 906157 | --wo 906156,906157] [--email]
+              Recheck specific work orders, whenever they closed. Prints the results;
+              add --email to also send them.
+
+        Other options:
+          --config file.json   use a different settings file (default appsettings.json next to the exe)
+          --help               show this help
+        """;
+
     public static Options Parse(string[] args)
     {
         int days = 1;
-        bool noEmail = false, noExcel = false, help = false;
+        bool daysGiven = false, email = false, noEmail = false, help = false;
+        var workOrders = new List<string>();
         string? config = null;
+
+        string Next(ref int i, string flag) =>
+            i + 1 < args.Length ? args[++i] : throw new ArgumentException($"{flag} needs a value.");
+
         for (var i = 0; i < args.Length; i++)
         {
             switch (args[i].ToLowerInvariant())
             {
-                case "--days" when i + 1 < args.Length: days = ParseDays(args[++i]); break;
+                case "--days": days = ParseDays(Next(ref i, "--days")); daysGiven = true; break;
+                case "--wo":
+                    workOrders.AddRange(Next(ref i, "--wo")
+                        .Split(new[] { ',', ';', ' ' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+                    break;
+                case "--email": email = true; break;
                 case "--no-email": noEmail = true; break;
-                case "--no-excel": noExcel = true; break;
-                case "--config" when i + 1 < args.Length: config = args[++i]; break;
+                case "--no-excel": break;   // the spreadsheet was removed; still accepted so old command lines keep working
+                case "--config": config = Next(ref i, "--config"); break;
                 case "-h" or "--help" or "/?": help = true; break;
-                default: days = ParseDays(args[i]); break;
+                default:
+                    if (int.TryParse(args[i], out _)) { days = ParseDays(args[i]); daysGiven = true; break; }
+                    throw new ArgumentException($"Unknown option '{args[i]}'.");
             }
         }
-        return new Options(days, noEmail, noExcel, config, help);
+
+        if (workOrders.Count > 0 && daysGiven)
+            throw new ArgumentException("Use either --wo or --days, not both.");
+        if (email && noEmail)
+            throw new ArgumentException("Use either --email or --no-email, not both.");
+
+        return new Options(days, workOrders.Distinct(StringComparer.OrdinalIgnoreCase).ToList(), email, noEmail, config, help);
     }
 
     private static int ParseDays(string s) =>

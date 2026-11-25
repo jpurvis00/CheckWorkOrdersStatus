@@ -8,6 +8,7 @@ namespace WorkOrderDailyCheck.Data;
 public interface IErpRepository : IDisposable
 {
     List<ClosedWorkOrder> GetClosedWorkOrders(int daysBack);
+    ClosedWorkOrder GetWorkOrder(string workOrderNo);
     WorkOrderData GetWorkOrderData(ClosedWorkOrder workOrder);
 }
 
@@ -57,6 +58,19 @@ public sealed class ErpRepository : IErpRepository
              and close_date <  trunc(sysdate) - :days + 1
            order by work_order_no",
         new { days = daysBack });
+
+    /// <summary>
+    /// Looks up one WO for a manual recheck, whenever it closed. If it isn't in
+    /// z_closed_jobs_nightly, the checks still run with just the WO number.
+    /// </summary>
+    public ClosedWorkOrder GetWorkOrder(string workOrderNo) =>
+        Query<ClosedWorkOrder>(
+            @"select work_order_no, item_no, item_description, wo_qty, close_date
+                from z_closed_jobs_nightly
+               where work_order_no = :wo
+               order by close_date desc",
+            new { wo = workOrderNo }).FirstOrDefault()
+        ?? new ClosedWorkOrder { WorkOrderNo = workOrderNo, FoundInClosedJobs = false };
 
     public WorkOrderData GetWorkOrderData(ClosedWorkOrder workOrder)
     {

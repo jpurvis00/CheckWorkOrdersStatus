@@ -5,12 +5,10 @@ day and it:
 
 1. Reads the work orders closed yesterday from `z_closed_jobs_nightly` (or `N` days back).
 2. Runs the **status** checks and the **cost** checks on each one.
-3. Appends one row per work order to the tracking spreadsheet: WO #, Item, Description, WO Qty,
-   Date Completed, **Cost OK**, **Status OK** (and a short Notes column). A check mark is written
-   only when that check found no errors. A WO already in the sheet is not added again, so a day
-   can be safely re-run.
-4. Emails you the results: problems first, then every WO with its cost/status marks. The
-   spreadsheet is attached.
+3. Emails you the results: problems first, then every WO with a cost and a status mark. A check
+   mark means that check found no errors.
+
+You can also recheck specific work orders at any time with `--wo` (see Usage).
 
 It only ever **reads** from the database: every statement must be a single `SELECT`, or the
 program refuses to run it, and all values are bind parameters.
@@ -45,8 +43,7 @@ The work-center lists, the 8-hour limit and the $0.50 tolerance live in the `Rul
 
 ## Setup (Windows PC or server on the company network)
 
-The program has to run on a machine that can reach the Oracle database, the `P:` share and your
-mail server.
+The program has to run on a machine that can reach the Oracle database and send email.
 
 1. Build it (needs the .NET 8 SDK), or use the prebuilt zip:
    ```
@@ -56,35 +53,45 @@ mail server.
 2. Copy `appsettings.example.json` to `appsettings.json` next to the exe and fill in:
    - `ConnectionStrings:Default` (or `ConnectionString`): the same one the old programs use. A
      read-only Oracle user is best.
-   - `Excel:Path`: your workbook. If the task will run while you're logged off, use the UNC path
-     (run `net use` to see what `P:` maps to), because drive letters aren't mapped then. In JSON
-     every backslash is doubled, so `\\server\share\file.xlsx` is written
-     `"\\\\server\\share\\file.xlsx"`.
    - `Email`: either `"Provider": "Graph"` (Microsoft 365 app registration with the **Mail.Send**
      application permission; `From` must be a real mailbox) or `"Provider": "Smtp"` with a mail
      server. Keep secrets out of the file with the environment variables
      `WODC_Email__Graph__ClientSecret` or `WODC_Email__Password`.
-3. Try it by hand, without sending email or touching the spreadsheet:
+3. Try it by hand without sending email:
    ```
-   WorkOrderDailyCheck.exe --days 1 --no-email --no-excel
+   WorkOrderDailyCheck.exe --days 1 --no-email
    ```
-4. Schedule it for 6:00 PM every day (elevated PowerShell):
+4. Schedule it for 6:00 PM every day (elevated PowerShell). The task runs `--days 1`.
    ```
+   Get-ChildItem C:\Tools\WorkOrderDailyCheck | Unblock-File
    .\scripts\Register-DailyTask.ps1 -ExePath "C:\Tools\WorkOrderDailyCheck\WorkOrderDailyCheck.exe"
    ```
+   `Unblock-File` is needed when the files came from a downloaded zip; otherwise PowerShell
+   refuses to run the unsigned script.
 
 ## Usage
 
+**Daily check** (what the scheduled task runs):
 ```
-WorkOrderDailyCheck [days] [--days N] [--no-email] [--no-excel] [--config file.json]
+WorkOrderDailyCheck.exe [--days N] [--no-email]
 ```
-`days` defaults to 1 (yesterday). Exit code is 0 when everything is OK, 1 when some WOs need
-attention, 2 when the run failed. A failed run still sends an email saying why.
+Checks every WO closed `N` days ago (default 1 = yesterday) and emails the results. Use
+`--days 3` to redo the check for three days ago.
 
-Logs and a plain-text copy of each day's report are written to `logs\` next to the exe.
+**Recheck specific work orders**, whenever they closed:
+```
+WorkOrderDailyCheck.exe --wo 906156
+WorkOrderDailyCheck.exe --wo 906156,906157 --email
+```
+Prints the results in the console. Add `--email` to also send them in the same format as the
+daily email. A WO that isn't in `z_closed_jobs_nightly` is still checked, but the item details
+are blank. A number with no activity at all is reported as not found. `--wo` and `--days` can't
+be used together.
 
-If the workbook is open in Excel when the job runs, the program retries for a few minutes. Then
-it saves a copy to `output\` next to the exe and the email tells you where it went.
+Exit code is 0 when everything is OK, 1 when some WOs need attention, 2 when the run failed. A
+failed daily run still sends an email saying why.
+
+Logs and a plain-text copy of each report are written to `logs\` next to the exe.
 
 ## Tests
 

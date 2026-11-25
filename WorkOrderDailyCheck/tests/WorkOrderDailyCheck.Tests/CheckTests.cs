@@ -1,5 +1,4 @@
 using Microsoft.Extensions.Configuration;
-using ClosedXML.Excel;
 using WorkOrderDailyCheck.Checks;
 using WorkOrderDailyCheck.Data;
 using WorkOrderDailyCheck.Output;
@@ -169,12 +168,8 @@ public class CheckTests
         Assert.Throws<InvalidOperationException>(() => ErpRepository.EnsureReadOnly(sql));
 }
 
-public class ExcelTests : IDisposable
+public class ReportTests
 {
-    private readonly string _dir = Path.Combine(Path.GetTempPath(), "wodc_" + Guid.NewGuid().ToString("N"));
-    public ExcelTests() => Directory.CreateDirectory(_dir);
-    public void Dispose() => Directory.Delete(_dir, true);
-
     private static WorkOrderResult Result(string no, bool costErr = false, bool statusErr = false)
     {
         var r = new WorkOrderResult
@@ -187,79 +182,78 @@ public class ExcelTests : IDisposable
     }
 
     [Fact]
-    public void Creates_workbook_appends_rows_and_skips_duplicates()
-    {
-        var settings = new ExcelSettings { Path = Path.Combine(_dir, "log.xlsx"), SaveRetries = 0 };
-
-        var first = ExcelLog.Append(new[] { Result("1001"), Result("1002", costErr: true), Result("1003", statusErr: true) }, settings, _dir);
-        Assert.Equal(3, first.RowsAdded);
-        Assert.Null(first.Warning);
-
-        var second = ExcelLog.Append(new[] { Result("1003"), Result("1004") }, settings, _dir);
-        Assert.Equal(1, second.RowsAdded);
-        Assert.Equal(new[] { "1003" }, second.AlreadyInSheet);
-
-        using var wb = new XLWorkbook(settings.Path);
-        var ws = wb.Worksheet(1);
-        Assert.Equal("WO #", ws.Cell(1, 1).GetString());
-        Assert.Equal(5, ws.LastRowUsed()!.RowNumber());
-        Assert.Equal(1001, ws.Cell(2, 1).GetDouble());
-        Assert.Equal(new DateTime(2026, 11, 24), ws.Cell(2, 5).GetDateTime());
-        // 1001 all good
-        Assert.Equal("✓", ws.Cell(2, 6).GetString());
-        Assert.Equal("✓", ws.Cell(2, 7).GetString());
-        // 1002 cost problem -> cost blank, status checked
-        Assert.Equal("", ws.Cell(3, 6).GetString());
-        Assert.Equal("✓", ws.Cell(3, 7).GetString());
-        // 1003 status problem -> status blank, cost checked
-        Assert.Equal("✓", ws.Cell(4, 6).GetString());
-        Assert.Equal("", ws.Cell(4, 7).GetString());
-        Assert.Equal("1004", ws.Cell(5, 1).GetFormattedString());
-    }
-
-    [Fact]
-    public void Appends_after_existing_user_rows_in_existing_workbook()
-    {
-        var path = Path.Combine(_dir, "existing.xlsx");
-        using (var wb = new XLWorkbook())
-        {
-            var ws = wb.AddWorksheet("My Sheet");
-            ws.Cell(1, 1).Value = "WO #";
-            ws.Cell(2, 1).Value = 900001;
-            ws.Cell(2, 3).Value = "typed by hand";
-            wb.SaveAs(path);
-        }
-
-        var outcome = ExcelLog.Append(new[] { Result("900001"), Result("900002") }, new ExcelSettings { Path = path }, _dir);
-        Assert.Equal(1, outcome.RowsAdded);
-
-        using var check = new XLWorkbook(path);
-        var sheet = check.Worksheet("My Sheet");
-        Assert.Equal("typed by hand", sheet.Cell(2, 3).GetString());
-        Assert.Equal(900002, sheet.Cell(3, 1).GetDouble());
-    }
-
-    [Fact]
-    public void Unreachable_folder_falls_back_and_warns()
-    {
-        var settings = new ExcelSettings { Path = Path.Combine(_dir, "missing", "log.xlsx"), FallbackFolder = "fb" };
-        var outcome = ExcelLog.Append(new[] { Result("1") }, settings, _dir);
-        Assert.NotNull(outcome.Warning);
-        Assert.StartsWith(Path.Combine(_dir, "fb"), outcome.SavedTo);
-        Assert.True(File.Exists(outcome.SavedTo));
-    }
-
-    [Fact]
-    public void Email_body_lists_problems_and_encodes_text()
+    public void Daily_email_lists_problems_and_encodes_text()
     {
         var bad = Result("1002", costErr: true);
         bad.WorkOrder.ItemDescription = "<b>Bolt</b> & nut";
         var s = new RunSummary { DateChecked = new DateTime(2026, 11, 24), Results = new[] { Result("1001"), bad } };
         Assert.Equal("WO check 11/24/2026: 1 of 2 need attention", s.Subject);
-        var html = Report.Html(s, "✓");
+        var html = Report.Html(s);
+        Assert.Contains("Work order check for WOs closed Tuesday, November 24, 2026", html);
         Assert.Contains("Cost:</b> bad cost", html);
         Assert.Contains("&lt;b&gt;Bolt&lt;/b&gt; &amp; nut", html);
+        Assert.DoesNotContain("pread", html);   // no spreadsheet lines
     }
+
+    [Fact]
+    public void Recheck_subject_names_the_work_orders()
+    {
+        var ok = new RunSummary { DateChecked = DateTime.Today, Results = new[] { Result("906156") }, RequestedWorkOrders = new[] { "906156" } };
+        Assert.Equal("WO recheck 906156: OK", ok.Subject);
+        Assert.Contains("Work order recheck: 906156", Report.Html(ok));
+
+        var bad = new RunSummary { DateChecked = DateTime.Today, Results = new[] { Result("906156", statusErr: true) }, RequestedWorkOrders = new[] { "906156" } };
+        Assert.Equal("WO recheck 906156: needs attention", bad.Subject);
+    }
+
+    [Fact]
+    public void Work_order_not_in_closed_jobs_is_noted()
+    {
+        var r = new WorkOrderResult { WorkOrder = new() { WorkOrderNo = "777", FoundInClosedJobs = false } };
+        var s = new RunSummary { DateChecked = DateTime.Today, Results = new[] { r }, RequestedWorkOrders = new[] { "777" } };
+        Assert.Contains("Not in z_closed_jobs_nightly", Report.Text(s));
+    }
+}
+
+public class OptionsTests
+{
+    [Fact]
+    public void Defaults_to_one_day_back_with_email()
+    {
+        var o = Options.Parse(Array.Empty<string>());
+        Assert.Equal(1, o.Days);
+        Assert.False(o.IsWorkOrderRun);
+        Assert.False(o.NoEmail);
+    }
+
+    [Fact]
+    public void Days_flag_and_bare_number_both_work()
+    {
+        Assert.Equal(3, Options.Parse(new[] { "--days", "3" }).Days);
+        Assert.Equal(2, Options.Parse(new[] { "2" }).Days);
+    }
+
+    [Fact]
+    public void Wo_accepts_repeats_and_comma_lists()
+    {
+        var o = Options.Parse(new[] { "--wo", "906156", "--WO", "906157,906158", "--wo", "906156", "--email" });
+        Assert.Equal(new[] { "906156", "906157", "906158" }, o.WorkOrders);
+        Assert.True(o.IsWorkOrderRun);
+        Assert.True(o.Email);
+    }
+
+    [Theory]
+    [InlineData("--wo", "1", "--days", "2")]
+    [InlineData("--wo")]
+    [InlineData("--days", "0")]
+    [InlineData("--bogus")]
+    [InlineData("--email", "--no-email")]
+    public void Bad_arguments_are_rejected(params string[] args) =>
+        Assert.Throws<ArgumentException>(() => Options.Parse(args));
+
+    [Fact]
+    public void Old_no_excel_flag_is_still_accepted() =>
+        Assert.Equal(1, Options.Parse(new[] { "--days", "1", "--no-excel" }).Days);
 }
 
 public class ConfigAndGraphTests
@@ -310,7 +304,7 @@ public class ConfigAndGraphTests
     }
 
     [Fact]
-    public void Graph_gets_token_then_sends_as_From_mailbox_with_attachment()
+    public void Graph_gets_token_then_sends_as_From_mailbox()
     {
         var settings = new EmailSettings
         {
@@ -318,7 +312,7 @@ public class ConfigAndGraphTests
             Graph = new() { TenantId = "tid", ClientId = "cid", ClientSecret = "sec" },
         };
         var handler = new FakeHandler();
-        GraphMailer.Send(settings, "Subj", "<p>hi</p>", ("log.xlsx", new byte[] { 1, 2, 3 }), handler);
+        GraphMailer.Send(settings, "Subj", "<p>hi</p>", handler);
 
         Assert.Equal(2, handler.Calls.Count);
         Assert.Equal("https://login.microsoftonline.com/tid/oauth2/v2.0/token", handler.Calls[0].Req.RequestUri!.ToString());
@@ -327,6 +321,6 @@ public class ConfigAndGraphTests
         Assert.Equal("tok", handler.Calls[1].Req.Headers.Authorization!.Parameter);
         var sent = System.Text.Json.Nodes.JsonNode.Parse(handler.Calls[1].Body)!["message"]!;
         Assert.Equal("jeff@example.com", sent["toRecipients"]![0]!["emailAddress"]!["address"]!.GetValue<string>());
-        Assert.Equal("AQID", sent["attachments"]![0]!["contentBytes"]!.GetValue<string>());
+        Assert.Null(sent["attachments"]);
     }
 }

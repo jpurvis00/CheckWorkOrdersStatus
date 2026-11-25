@@ -11,11 +11,7 @@ namespace WorkOrderDailyCheck.Output;
 /// </summary>
 public static class GraphMailer
 {
-    // Graph's sendMail limit for inline attachments is 3 MB (base64 grows the size by a third).
-    internal const int MaxAttachmentBytes = 2_900_000;
-
-    public static void Send(EmailSettings settings, string subject, string html,
-                            (string Name, byte[] Bytes)? attachment, HttpMessageHandler? handler = null)
+    public static void Send(EmailSettings settings, string subject, string html, HttpMessageHandler? handler = null)
     {
         var g = settings.Graph;
         if (string.IsNullOrWhiteSpace(g.TenantId) || string.IsNullOrWhiteSpace(g.ClientId) || string.IsNullOrWhiteSpace(g.ClientSecret))
@@ -44,7 +40,7 @@ public static class GraphMailer
         var request = new HttpRequestMessage(HttpMethod.Post,
             $"https://graph.microsoft.com/v1.0/users/{Uri.EscapeDataString(settings.From)}/sendMail")
         {
-            Content = JsonContent.Create(BuildMessage(settings, subject, html, attachment)),
+            Content = JsonContent.Create(BuildMessage(settings, subject, html)),
         };
         request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
         var sendResponse = http.SendAsync(request).GetAwaiter().GetResult();
@@ -53,7 +49,7 @@ public static class GraphMailer
                 $"Graph sendMail failed ({(int)sendResponse.StatusCode}): {sendResponse.Content.ReadAsStringAsync().GetAwaiter().GetResult()}");
     }
 
-    internal static JsonObject BuildMessage(EmailSettings settings, string subject, string html, (string Name, byte[] Bytes)? attachment)
+    internal static JsonObject BuildMessage(EmailSettings settings, string subject, string html)
     {
         var message = new JsonObject
         {
@@ -63,16 +59,6 @@ public static class GraphMailer
                 .Select(a => (JsonNode)new JsonObject { ["emailAddress"] = new JsonObject { ["address"] = a } })
                 .ToArray()),
         };
-        if (attachment is { } a)
-        {
-            message["attachments"] = new JsonArray(new JsonObject
-            {
-                ["@odata.type"] = "#microsoft.graph.fileAttachment",
-                ["name"] = a.Name,
-                ["contentType"] = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                ["contentBytes"] = Convert.ToBase64String(a.Bytes),
-            });
-        }
         return new JsonObject { ["message"] = message, ["saveToSentItems"] = true };
     }
 }

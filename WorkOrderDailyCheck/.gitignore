@@ -1,0 +1,5 @@
+# The repo-wide *.json ignore would hide the example settings file.
+!appsettings.example.json
+appsettings.json
+logs/
+output/

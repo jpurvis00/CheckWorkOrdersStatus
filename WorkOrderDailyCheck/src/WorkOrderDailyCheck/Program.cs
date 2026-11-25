@@ -16,12 +16,12 @@ if (options.ShowHelp)
     return 0;
 }
 
-var settings = new ConfigurationBuilder()
+var config = new ConfigurationBuilder()
     .SetBasePath(baseDir)
     .AddJsonFile(options.ConfigPath ?? "appsettings.json", optional: false)
     .AddEnvironmentVariables("WODC_")   // e.g. WODC_Email__Password, WODC_ConnectionString
-    .Build()
-    .Get<AppSettings>() ?? new AppSettings();
+    .Build();
+var settings = AppSettings.Load(config);
 
 var logFolder = Path.IsPathRooted(settings.LogFolder) ? settings.LogFolder : Path.Combine(baseDir, settings.LogFolder);
 Directory.CreateDirectory(logFolder);

@@ -130,22 +130,41 @@ public static class Report
 
     public static void Send(RunSummary s, EmailSettings settings, string checkMark)
     {
-        if (string.IsNullOrWhiteSpace(settings.SmtpHost) || settings.To.Count == 0 || string.IsNullOrWhiteSpace(settings.From))
-            throw new InvalidOperationException("Email is enabled but Email:SmtpHost, Email:From or Email:To is not set in appsettings.json.");
+        if (settings.To.Count == 0 || string.IsNullOrWhiteSpace(settings.From))
+            throw new InvalidOperationException("Email is enabled but Email:From or Email:To is not set in appsettings.json.");
+
+        (string Name, byte[] Bytes)? attachment = null;
+        var html = Html(s, checkMark);
+        if (settings.AttachWorkbook && s.Excel?.SavedTo is { } path && File.Exists(path))
+        {
+            using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            using var ms = new MemoryStream();
+            fs.CopyTo(ms);
+            attachment = (Path.GetFileName(path), ms.ToArray());
+        }
+
+        if (string.Equals(settings.Provider, "Graph", StringComparison.OrdinalIgnoreCase))
+        {
+            if (attachment is { } a && a.Bytes.Length > GraphMailer.MaxAttachmentBytes)
+            {
+                html = html.Replace("</body>", $"<p>The workbook ({a.Bytes.Length / 1024 / 1024.0:0.0} MB) is too large to attach; open it at {E(s.Excel!.SavedTo)}.</p></body>");
+                attachment = null;
+            }
+            GraphMailer.Send(settings, s.Subject, html, attachment);
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(settings.SmtpHost))
+            throw new InvalidOperationException("Email:Provider is Smtp but Email:SmtpHost is not set in appsettings.json.");
 
         var message = new MimeMessage();
         message.From.Add(MailboxAddress.Parse(settings.From));
         foreach (var to in settings.To) message.To.Add(MailboxAddress.Parse(to));
         message.Subject = s.Subject;
 
-        var body = new BodyBuilder { HtmlBody = Html(s, checkMark), TextBody = Text(s) };
-        if (settings.AttachWorkbook && s.Excel?.SavedTo is { } path && File.Exists(path))
-        {
-            using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
-            using var ms = new MemoryStream();
-            fs.CopyTo(ms);
-            body.Attachments.Add(Path.GetFileName(path), ms.ToArray());
-        }
+        var body = new BodyBuilder { HtmlBody = html, TextBody = Text(s) };
+        if (attachment is { } att)
+            body.Attachments.Add(att.Name, att.Bytes);
         message.Body = body.ToMessageBody();
 
         using var client = new SmtpClient();

@@ -54,11 +54,16 @@ mail server.
    ```
    This gives a single `WorkOrderDailyCheck.exe`, so .NET doesn't need to be installed on the machine.
 2. Copy `appsettings.example.json` to `appsettings.json` next to the exe and fill in:
-   - `ConnectionString`: the same one the old programs use (a read-only Oracle user is best).
+   - `ConnectionStrings:Default` (or `ConnectionString`): the same one the old programs use. A
+     read-only Oracle user is best.
    - `Excel:Path`: your workbook. If the task will run while you're logged off, use the UNC path
-     (run `net use` to see what `P:` maps to), because drive letters aren't mapped then.
-   - `Email`: SMTP server, from, to. Put the password in the `WODC_Email__Password` environment
-     variable rather than in the file if you can.
+     (run `net use` to see what `P:` maps to), because drive letters aren't mapped then. In JSON
+     every backslash is doubled, so `\\server\share\file.xlsx` is written
+     `"\\\\server\\share\\file.xlsx"`.
+   - `Email`: either `"Provider": "Graph"` (Microsoft 365 app registration with the **Mail.Send**
+     application permission; `From` must be a real mailbox) or `"Provider": "Smtp"` with a mail
+     server. Keep secrets out of the file with the environment variables
+     `WODC_Email__Graph__ClientSecret` or `WODC_Email__Password`.
 3. Try it by hand, without sending email or touching the spreadsheet:
    ```
    WorkOrderDailyCheck.exe --days 1 --no-email --no-excel

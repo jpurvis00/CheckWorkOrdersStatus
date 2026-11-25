@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Configuration;
 using ClosedXML.Excel;
 using WorkOrderDailyCheck.Checks;
 using WorkOrderDailyCheck.Data;
@@ -258,5 +259,74 @@ public class ExcelTests : IDisposable
         var html = Report.Html(s, "✓");
         Assert.Contains("Cost:</b> bad cost", html);
         Assert.Contains("&lt;b&gt;Bolt&lt;/b&gt; &amp; nut", html);
+    }
+}
+
+public class ConfigAndGraphTests
+{
+    private static AppSettings Load(string json)
+    {
+        var path = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".json");
+        File.WriteAllText(path, json);
+        try
+        {
+            return AppSettings.Load(new Microsoft.Extensions.Configuration.ConfigurationBuilder().AddJsonFile(path).Build());
+        }
+        finally { File.Delete(path); }
+    }
+
+    [Fact]
+    public void Accepts_old_ConnectionStrings_Default_layout_and_single_string_To()
+    {
+        var s = Load("""
+        { // comment
+          "ConnectionStrings": { "Default": "Data Source=(DESCRIPTION=(ADDRESS=(PROTOCOL=TCP)(HOST=h)(PORT=1521))(CONNECT_DATA=(SID=x)));User Id=u;Password=p;" },
+          "Email": { "Provider": "Graph", "To": "a@x.com; b@x.com", "From": "f@x.com" }
+        }
+        """);
+        Assert.StartsWith("Data Source=(DESCRIPTION=", s.ConnectionString);
+        Assert.Equal(new[] { "a@x.com", "b@x.com" }, s.Email.To);
+        Assert.Equal("Graph", s.Email.Provider);
+    }
+
+    [Fact]
+    public void To_as_list_still_works_and_missing_connection_string_is_a_clear_error()
+    {
+        Assert.Equal(new[] { "a@x.com" }, Load("""{ "ConnectionString": "x", "Email": { "To": [ "a@x.com" ] } }""").Email.To);
+        var ex = Assert.Throws<InvalidOperationException>(() => Load("""{ "Email": { } }"""));
+        Assert.Contains("ConnectionStrings", ex.Message);
+    }
+
+    private sealed class FakeHandler : HttpMessageHandler
+    {
+        public List<(HttpRequestMessage Req, string Body)> Calls { get; } = new();
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage r, CancellationToken ct)
+        {
+            Calls.Add((r, r.Content is null ? "" : await r.Content.ReadAsStringAsync(ct)));
+            return r.RequestUri!.Host.StartsWith("login")
+                ? new HttpResponseMessage(System.Net.HttpStatusCode.OK) { Content = new StringContent("""{"access_token":"tok"}""") }
+                : new HttpResponseMessage(System.Net.HttpStatusCode.Accepted);
+        }
+    }
+
+    [Fact]
+    public void Graph_gets_token_then_sends_as_From_mailbox_with_attachment()
+    {
+        var settings = new EmailSettings
+        {
+            Provider = "Graph", From = "inventory-sync@example.com", To = { "jeff@example.com" },
+            Graph = new() { TenantId = "tid", ClientId = "cid", ClientSecret = "sec" },
+        };
+        var handler = new FakeHandler();
+        GraphMailer.Send(settings, "Subj", "<p>hi</p>", ("log.xlsx", new byte[] { 1, 2, 3 }), handler);
+
+        Assert.Equal(2, handler.Calls.Count);
+        Assert.Equal("https://login.microsoftonline.com/tid/oauth2/v2.0/token", handler.Calls[0].Req.RequestUri!.ToString());
+        Assert.Contains("grant_type=client_credentials", handler.Calls[0].Body);
+        Assert.Equal("https://graph.microsoft.com/v1.0/users/inventory-sync%40example.com/sendMail", handler.Calls[1].Req.RequestUri!.AbsoluteUri);
+        Assert.Equal("tok", handler.Calls[1].Req.Headers.Authorization!.Parameter);
+        var sent = System.Text.Json.Nodes.JsonNode.Parse(handler.Calls[1].Body)!["message"]!;
+        Assert.Equal("jeff@example.com", sent["toRecipients"]![0]!["emailAddress"]!["address"]!.GetValue<string>());
+        Assert.Equal("AQID", sent["attachments"]![0]!["contentBytes"]!.GetValue<string>());
     }
 }
